@@ -1,0 +1,17 @@
+[Unit]
+Description=Shoplite Node.js Web Application
+After=network.target
+
+[Service]
+Type=simple
+User=webapp
+Group=webapp
+WorkingDirectory=/opt/webapp/current
+Environment=NODE_ENV=production
+Environment=PORT=3000
+ExecStart=/usr/bin/node /opt/webapp/current/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
