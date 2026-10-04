@@ -1,3 +1,5 @@
+throw new Error('boom');
+
 const http = require('node:http');
 const { createHandler } = require('./src/app');
 
