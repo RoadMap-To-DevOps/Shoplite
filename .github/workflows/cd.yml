@@ -123,7 +123,7 @@ jobs:
           scp \
             -o StrictHostKeyChecking=no \
             -o IdentitiesOnly=yes \
-            -o ProxyJump="${SSH_USER}@${BASTION_HOST}" \
+            -j "${SSH_USER}@${BASTION_HOST}" \
             -i ~/.ssh/deploy_key \
             "${ARTIFACT}" \
             "${SSH_USER}@${APP_HOSTS}:/tmp/${ARTIFACT}"
