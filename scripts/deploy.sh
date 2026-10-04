@@ -51,7 +51,7 @@ rollback() {
 
         echo "Rollback completed."
     else
-        echo "No previous release available for rollback."
+        echo "No previous release available."
     fi
 }
 
@@ -64,6 +64,39 @@ echo "Shoplite Deployment"
 echo "Release: ${SHA}"
 echo "========================================"
 
+# --------------------------------------------------
+# Ensure webapp user exists
+# --------------------------------------------------
+
+echo "Ensuring webapp user exists..."
+
+if ! id webapp >/dev/null 2>&1; then
+    echo "Creating webapp user..."
+
+    sudo useradd \
+        --system \
+        --create-home \
+        --shell /sbin/nologin \
+        webapp
+else
+    echo "webapp user already exists."
+fi
+
+# --------------------------------------------------
+# Prepare application directory
+# --------------------------------------------------
+
+echo "Preparing application directory..."
+
+sudo mkdir -p "${APP_ROOT}"
+sudo mkdir -p "${RELEASES_DIR}"
+
+sudo chown -R webapp:webapp "${APP_ROOT}"
+
+# --------------------------------------------------
+# Create release
+# --------------------------------------------------
+
 echo "Creating release directory..."
 
 sudo mkdir -p "${RELEASE_DIR}"
@@ -71,6 +104,12 @@ sudo mkdir -p "${RELEASE_DIR}"
 echo "Copying application files..."
 
 sudo cp -a "${SOURCE_DIR}/app/." "${RELEASE_DIR}/"
+
+sudo chown -R webapp:webapp "${RELEASE_DIR}"
+
+# --------------------------------------------------
+# Install systemd service
+# --------------------------------------------------
 
 echo "Installing systemd service..."
 
@@ -82,13 +121,25 @@ sudo systemctl daemon-reload
 
 sudo systemctl enable webapp
 
+# --------------------------------------------------
+# Activate release
+# --------------------------------------------------
+
 echo "Updating current symlink..."
 
 sudo ln -sfn "${RELEASE_DIR}" "${CURRENT_LINK}"
 
+# --------------------------------------------------
+# Restart application
+# --------------------------------------------------
+
 echo "Restarting webapp service..."
 
 sudo systemctl restart webapp
+
+# --------------------------------------------------
+# Health check
+# --------------------------------------------------
 
 echo "Waiting for application health..."
 
