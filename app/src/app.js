@@ -31,7 +31,7 @@ function renderHome({ version, hostname }) {
 <html>
   <head><meta charset="utf-8"><title>Sample Web App</title></head>
   <body style="font-family: sans-serif; max-width: 40rem; margin: 4rem auto;">
-    <h1>Hello from a private subnet!</h1>
+    <h1>Shoplite - Happy Path Deployment</h1>
     <p>Version: <code>${escapeHtml(version)}</code></p>
     <p>Served by: <code>${escapeHtml(hostname)}</code></p>
     <p>Refresh a few times - the hostname changes as the load balancer spreads traffic across AZs.</p>
@@ -47,16 +47,20 @@ function createHandler({ version = readVersion(), hostname = os.hostname() } = {
     }
 
     const { pathname } = new URL(req.url, 'http://localhost');
+
     switch (pathname) {
       case '/health':
         sendJson(res, 200, { status: 'ok' });
         break;
+
       case '/version':
         sendJson(res, 200, { version, hostname });
         break;
+
       case '/':
         sendHtml(res, 200, renderHome({ version, hostname }));
         break;
+
       default:
         sendJson(res, 404, { error: 'not found' });
     }
