@@ -34,6 +34,10 @@ jobs:
         working-directory: app
         run: npm ci
 
+      - name: Run lint
+        working-directory: app
+        run: npm run lint
+
       - name: Run tests
         working-directory: app
         run: npm test
@@ -42,32 +46,26 @@ jobs:
         working-directory: app
         run: echo "${GITHUB_SHA}" > VERSION
 
-      - name: Prepare deployment package
+      - name: Create release package
         run: |
-          rm -rf package
-          mkdir -p package/deploy
+          mkdir -p artifact
 
-          cp -a app/. package/
+          tar \
+            --exclude='app/node_modules' \
+            --exclude='app/tests' \
+            --exclude='app/test' \
+            --exclude='app/*.test.js' \
+            --exclude='app/*.spec.js' \
+            -czf "artifact/webapp-${GITHUB_SHA}.tar.gz" \
+            app \
+            deploy \
+            scripts
 
-          rm -rf package/test
-          rm -rf package/tests
-
-          find package -type f \( \
-            -name "*.test.js" \
-            -o -name "*.spec.js" \
-          \) -delete
-
-          cp deploy/webapp.service package/deploy/webapp.service
-
-      - name: Package application
-        run: |
-          tar -czf "webapp-${GITHUB_SHA}.tar.gz" -C package .
-
-      - name: Upload artifact
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: webapp-${{ github.sha }}
-          path: webapp-${{ github.sha }}.tar.gz
+          path: artifact/webapp-${{ github.sha }}.tar.gz
 
   deploy:
     name: Deploy
@@ -79,104 +77,87 @@ jobs:
       url: http://${{ vars.BASTION_HOST }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download artifact
+      - name: Download release artifact
         uses: actions/download-artifact@v4
         with:
           name: webapp-${{ github.sha }}
+          path: artifact
 
       - name: Prepare SSH key
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          BASTION_HOST: ${{ vars.BASTION_HOST }}
         run: |
-          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > deploy-key.pem
+          chmod 600 deploy-key.pem
 
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-
-          chmod 600 ~/.ssh/deploy_key
-
-          ssh-keyscan -H "$BASTION_HOST" >> ~/.ssh/known_hosts
-
-      - name: Verify bastion SSH
+      - name: Copy release to app server
         env:
           BASTION_HOST: ${{ vars.BASTION_HOST }}
+          APP_HOST: ${{ vars.APP_HOSTS }}
           SSH_USER: ${{ vars.SSH_USER }}
-        run: |
-          ssh \
-            -o StrictHostKeyChecking=yes \
-            -o IdentitiesOnly=yes \
-            -i ~/.ssh/deploy_key \
-            "${SSH_USER}@${BASTION_HOST}" \
-            "echo 'Bastion SSH connection successful'"
-
-      - name: Deploy to app server
-        env:
-          SHA: ${{ github.sha }}
-          ARTIFACT: webapp-${{ github.sha }}.tar.gz
-          BASTION_HOST: ${{ vars.BASTION_HOST }}
-          APP_HOSTS: ${{ vars.APP_HOSTS }}
-          SSH_USER: ${{ vars.SSH_USER }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
           scp \
-            -o StrictHostKeyChecking=no \
+            -i deploy-key.pem \
             -o IdentitiesOnly=yes \
-            -j "${SSH_USER}@${BASTION_HOST}" \
-            -i ~/.ssh/deploy_key \
-            "${ARTIFACT}" \
-            "${SSH_USER}@${APP_HOSTS}:/tmp/${ARTIFACT}"
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -i deploy-key.pem -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ${SSH_USER}@${BASTION_HOST}" \
+            "artifact/webapp-${RELEASE_SHA}.tar.gz" \
+            "${SSH_USER}@${APP_HOST}:/tmp/webapp-${RELEASE_SHA}.tar.gz"
 
+      - name: Run deployment
+        env:
+          BASTION_HOST: ${{ vars.BASTION_HOST }}
+          APP_HOST: ${{ vars.APP_HOSTS }}
+          SSH_USER: ${{ vars.SSH_USER }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
           ssh \
-            -o StrictHostKeyChecking=no \
+            -i deploy-key.pem \
             -o IdentitiesOnly=yes \
-            -o ProxyJump="${SSH_USER}@${BASTION_HOST}" \
-            -i ~/.ssh/deploy_key \
-            "${SSH_USER}@${APP_HOSTS}" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -i deploy-key.pem -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ${SSH_USER}@${BASTION_HOST}" \
+            "${SSH_USER}@${APP_HOST}" \
             "sudo mkdir -p /tmp/webapp-deploy && \
-             sudo cp /tmp/${ARTIFACT} /tmp/webapp-deploy/${ARTIFACT} && \
-             sudo mkdir -p /opt/webapp/releases/${SHA} && \
-             sudo tar -xzf /tmp/webapp-deploy/${ARTIFACT} -C /opt/webapp/releases/${SHA} && \
-             sudo cp /opt/webapp/releases/${SHA}/deploy/webapp.service /etc/systemd/system/webapp.service && \
-             sudo systemctl daemon-reload && \
-             sudo systemctl enable webapp && \
-             sudo ln -sfn /opt/webapp/releases/${SHA} /opt/webapp/current && \
-             sudo systemctl restart webapp"
+             sudo tar -xzf /tmp/webapp-${RELEASE_SHA}.tar.gz -C /tmp/webapp-deploy && \
+             sudo chmod +x /tmp/webapp-deploy/scripts/deploy.sh && \
+             sudo /tmp/webapp-deploy/scripts/deploy.sh ${RELEASE_SHA}"
 
       - name: Health check
         env:
           BASTION_HOST: ${{ vars.BASTION_HOST }}
-          APP_HOSTS: ${{ vars.APP_HOSTS }}
+          APP_HOST: ${{ vars.APP_HOSTS }}
           SSH_USER: ${{ vars.SSH_USER }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
-          for _ in {1..30}; do
-            if ssh \
-              -o StrictHostKeyChecking=no \
-              -o IdentitiesOnly=yes \
-              -o ProxyJump="${SSH_USER}@${BASTION_HOST}" \
-              -i ~/.ssh/deploy_key \
-              "${SSH_USER}@${APP_HOSTS}" \
-              "curl -fsS http://localhost:3000/health"; then
-
-              echo "Health check passed."
-              exit 0
-            fi
-
-            sleep 1
-          done
-
-          echo "Health check failed."
-          exit 1
+          ssh \
+            -i deploy-key.pem \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -i deploy-key.pem -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ${SSH_USER}@${BASTION_HOST}" \
+            "${SSH_USER}@${APP_HOST}" \
+            "curl -fsS http://localhost:3000/health"
 
       - name: Smoke test
         env:
-          SHA: ${{ github.sha }}
           BASTION_HOST: ${{ vars.BASTION_HOST }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
-          VERSION=$(curl -fsS "http://${BASTION_HOST}/version")
+          for _ in {1..10}; do
+            VERSION=$(curl -fsS "http://${BASTION_HOST}/version" || true)
 
-          echo "Expected SHA: ${SHA}"
-          echo "Received SHA: ${VERSION}"
+            if [ "$VERSION" = "$RELEASE_SHA" ]; then
+              echo "Smoke test passed."
+              exit 0
+            fi
 
-          test "${VERSION}" = "${SHA}"
+            sleep 3
+          done
+
+          echo "Smoke test failed."
+          echo "Expected: $RELEASE_SHA"
+          echo "Received: $VERSION"
+          exit 1
