@@ -147,7 +147,7 @@ jobs:
           RELEASE_SHA: ${{ github.sha }}
         run: |
           for _ in {1..10}; do
-            VERSION=$(curl -fsS "http://${BASTION_HOST}/version" || true)
+            VERSION=$(curl -fsS "http://${BASTION_HOST}/version" | jq -r '.version' || true)
 
             if [ "$VERSION" = "$RELEASE_SHA" ]; then
               echo "Smoke test passed."
