@@ -6,6 +6,11 @@ on:
       - main
 
   workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Commit SHA to deploy"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,6 +27,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -44,7 +51,7 @@ jobs:
 
       - name: Write commit SHA
         working-directory: app
-        run: echo "${GITHUB_SHA}" > VERSION
+        run: echo "${{ inputs.commit_sha || github.sha }}" > VERSION
 
       - name: Create release package
         run: |
@@ -56,7 +63,7 @@ jobs:
             --exclude='app/test' \
             --exclude='app/*.test.js' \
             --exclude='app/*.spec.js' \
-            -czf "artifact/webapp-${GITHUB_SHA}.tar.gz" \
+            -czf "artifact/webapp-${{ inputs.commit_sha || github.sha }}.tar.gz" \
             app \
             deploy \
             scripts
@@ -64,8 +71,8 @@ jobs:
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: webapp-${{ github.sha }}
-          path: artifact/webapp-${{ github.sha }}.tar.gz
+          name: webapp-${{ inputs.commit_sha || github.sha }}
+          path: artifact/webapp-${{ inputs.commit_sha || github.sha }}.tar.gz
 
   deploy:
     name: Deploy
@@ -80,7 +87,7 @@ jobs:
       - name: Download release artifact
         uses: actions/download-artifact@v4
         with:
-          name: webapp-${{ github.sha }}
+          name: webapp-${{ inputs.commit_sha || github.sha }}
           path: artifact
 
       - name: Prepare SSH key
@@ -95,7 +102,7 @@ jobs:
           BASTION_HOST: ${{ vars.BASTION_HOST }}
           APP_HOST: ${{ vars.APP_HOSTS }}
           SSH_USER: ${{ vars.SSH_USER }}
-          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_SHA: ${{ inputs.commit_sha || github.sha }}
         run: |
           scp \
             -i deploy-key.pem \
@@ -111,7 +118,7 @@ jobs:
           BASTION_HOST: ${{ vars.BASTION_HOST }}
           APP_HOST: ${{ vars.APP_HOSTS }}
           SSH_USER: ${{ vars.SSH_USER }}
-          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_SHA: ${{ inputs.commit_sha || github.sha }}
         run: |
           ssh \
             -i deploy-key.pem \
@@ -130,7 +137,6 @@ jobs:
           BASTION_HOST: ${{ vars.BASTION_HOST }}
           APP_HOST: ${{ vars.APP_HOSTS }}
           SSH_USER: ${{ vars.SSH_USER }}
-          RELEASE_SHA: ${{ github.sha }}
         run: |
           ssh \
             -i deploy-key.pem \
@@ -144,7 +150,7 @@ jobs:
       - name: Smoke test
         env:
           BASTION_HOST: ${{ vars.BASTION_HOST }}
-          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_SHA: ${{ inputs.commit_sha || github.sha }}
         run: |
           for _ in {1..10}; do
             VERSION=$(curl -fsS "http://${BASTION_HOST}/version" | jq -r '.version' || true)
