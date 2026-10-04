@@ -42,17 +42,26 @@ jobs:
         working-directory: app
         run: echo "${GITHUB_SHA}" > VERSION
 
+      - name: Prepare deployment package
+        run: |
+          rm -rf package
+          mkdir -p package/deploy
+
+          cp -a app/. package/
+
+          rm -rf package/test
+          rm -rf package/tests
+
+          find package -type f \( \
+            -name "*.test.js" \
+            -o -name "*.spec.js" \
+          \) -delete
+
+          cp deploy/webapp.service package/deploy/webapp.service
+
       - name: Package application
         run: |
-          tar \
-            --exclude='app/node_modules' \
-            --exclude='app/test' \
-            --exclude='app/tests' \
-            --exclude='app/*.test.js' \
-            --exclude='app/*.spec.js' \
-            -czf "webapp-${GITHUB_SHA}.tar.gz" \
-            app \
-            deploy
+          tar -czf "webapp-${GITHUB_SHA}.tar.gz" -C package .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -79,12 +88,29 @@ jobs:
           name: webapp-${{ github.sha }}
 
       - name: Prepare SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          BASTION_HOST: ${{ vars.BASTION_HOST }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' '${{ secrets.SSH_PRIVATE_KEY }}' > ~/.ssh/deploy_key
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ vars.BASTION_HOST }}" >> ~/.ssh/known_hosts
-          
+
+          ssh-keyscan -H "$BASTION_HOST" >> ~/.ssh/known_hosts
+
+      - name: Verify bastion SSH
+        env:
+          BASTION_HOST: ${{ vars.BASTION_HOST }}
+          SSH_USER: ${{ vars.SSH_USER }}
+        run: |
+          ssh \
+            -o StrictHostKeyChecking=yes \
+            -o IdentitiesOnly=yes \
+            -i ~/.ssh/deploy_key \
+            "${SSH_USER}@${BASTION_HOST}" \
+            "echo 'Bastion SSH connection successful'"
 
       - name: Deploy to app server
         env:
@@ -95,40 +121,44 @@ jobs:
           SSH_USER: ${{ vars.SSH_USER }}
         run: |
           scp \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
             -o ProxyJump="${SSH_USER}@${BASTION_HOST}" \
             -i ~/.ssh/deploy_key \
             "${ARTIFACT}" \
             "${SSH_USER}@${APP_HOSTS}:/tmp/${ARTIFACT}"
 
-          scp \
-            -o StrictHostKeyChecking=yes \
-            -o ProxyJump="${SSH_USER}@${BASTION_HOST}" \
-            -i ~/.ssh/deploy_key \
-            deploy/webapp.service \
-            "${SSH_USER}@${APP_HOSTS}:/tmp/webapp.service"
-
           ssh \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
             -o ProxyJump="${SSH_USER}@${BASTION_HOST}" \
             -i ~/.ssh/deploy_key \
             "${SSH_USER}@${APP_HOSTS}" \
-            "sudo mkdir -p /tmp/webapp-deploy && sudo cp /tmp/${ARTIFACT} /tmp/webapp-deploy/ && sudo cp /tmp/webapp.service /tmp/webapp-deploy/ && sudo sed -i 's|/opt/webapp/current|/opt/webapp/current|g' /tmp/webapp-deploy/webapp.service && sudo mkdir -p /opt/webapp/releases/${SHA} && sudo tar -xzf /tmp/webapp-deploy/${ARTIFACT} -C /opt/webapp/releases/${SHA} && sudo cp /tmp/webapp-deploy/webapp.service /etc/systemd/system/webapp.service && sudo systemctl daemon-reload && sudo systemctl enable webapp && sudo ln -sfn /opt/webapp/releases/${SHA} /opt/webapp/current && sudo systemctl restart webapp"
+            "sudo mkdir -p /tmp/webapp-deploy && \
+             sudo cp /tmp/${ARTIFACT} /tmp/webapp-deploy/${ARTIFACT} && \
+             sudo mkdir -p /opt/webapp/releases/${SHA} && \
+             sudo tar -xzf /tmp/webapp-deploy/${ARTIFACT} -C /opt/webapp/releases/${SHA} && \
+             sudo cp /opt/webapp/releases/${SHA}/deploy/webapp.service /etc/systemd/system/webapp.service && \
+             sudo systemctl daemon-reload && \
+             sudo systemctl enable webapp && \
+             sudo ln -sfn /opt/webapp/releases/${SHA} /opt/webapp/current && \
+             sudo systemctl restart webapp"
 
       - name: Health check
         env:
-          SHA: ${{ github.sha }}
           BASTION_HOST: ${{ vars.BASTION_HOST }}
           APP_HOSTS: ${{ vars.APP_HOSTS }}
           SSH_USER: ${{ vars.SSH_USER }}
         run: |
-          for i in {1..30}; do
+          for _ in {1..30}; do
             if ssh \
-              -o StrictHostKeyChecking=yes \
+              -o StrictHostKeyChecking=no \
+              -o IdentitiesOnly=yes \
               -o ProxyJump="${SSH_USER}@${BASTION_HOST}" \
               -i ~/.ssh/deploy_key \
               "${SSH_USER}@${APP_HOSTS}" \
               "curl -fsS http://localhost:3000/health"; then
+
               echo "Health check passed."
               exit 0
             fi
@@ -145,7 +175,8 @@ jobs:
           BASTION_HOST: ${{ vars.BASTION_HOST }}
         run: |
           VERSION=$(curl -fsS "http://${BASTION_HOST}/version")
-          echo "Expected: ${SHA}"
-          echo "Received: ${VERSION}"
+
+          echo "Expected SHA: ${SHA}"
+          echo "Received SHA: ${VERSION}"
 
           test "${VERSION}" = "${SHA}"
